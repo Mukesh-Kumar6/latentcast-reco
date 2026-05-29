@@ -1,0 +1,7 @@
+__pycache__/
+.vscode/settings.json
+*.pkl
+*.pt
+*.parquet
+*.npy
+*.index

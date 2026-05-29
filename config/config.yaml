@@ -1,0 +1,104 @@
+# config/config.yaml
+# ALU Cross-Domain Recommendation Engine
+# Scale: 8.6M users | 52K radio items | 300K podcasts
+
+# ─── Data Paths ──────────────────────────────────────────────
+data:
+  feedback_path:        "data/feedback_data.pkl"
+  podcast_latents_path: "data/podcast_latents.npy"
+  user_id_map_path:     "data/user_id_map.pkl"
+  output_dir:           "outputs/recommendations/"
+
+# ─── Model Dimensions ────────────────────────────────────────
+model:
+  input_vector_dim: 768
+  latent_dim: 128
+  bridge_hidden_dims: [256, 128]
+  bridge_dropout: 0.1
+  use_fp16: true
+
+# ─── ALU Training ────────────────────────────────────────────
+training:
+  epochs: 20
+  batch_size: 16384 #8192 #131072
+  learning_rate: 0.001
+  weight_decay: 1.0e-5
+  bpr_reg: 0.01
+  num_negatives: 4 #4
+  grad_clip: 1.0
+  warmup_steps: 500
+  checkpoint_dir: "checkpoints/alu/"
+  checkpoint_every_n_epochs: 2
+  num_workers: 4 #8
+  pin_memory: true
+  strong_pos_min: 4.0      # change to 3.5 if you want to include 3★ as positives
+  explicit_neg_max: 2.0    # change to 2.5 if 3★ should also count as weak negatives
+  explicit_neg_prob: 0.6   # increase to 0.8 if you want harder negatives
+# ─── Bridge Training ─────────────────────────────────────────
+bridge:
+  similarity_threshold: 0.75
+  max_anchor_pairs: 500000
+  epochs: 15
+  batch_size: 512 #4096
+  learning_rate: 0.0005
+  contrastive_margin: 0.5
+  checkpoint_dir: "checkpoints/bridge/"
+
+# ─── Vector Store Backend ─────────────────────────────────────
+# "milvus" → raw source vectors from Milvus + Milvus retrieval path
+# "faiss"  → local latent vectors + local FAISS retrieval
+vector_store: "faiss"
+
+# ─── FAISS (used only when vector_store: "faiss") ────────────
+faiss:
+  index_type: "IVFFlat"
+  nlist: 1024
+  nprobe: 32
+  use_gpu: true
+  gpu_id: 0
+  metric: "inner_product"
+  index_path: "checkpoints/podcast_faiss.index"
+
+# ─── Milvus (used when vector_store: "milvus") ───────────────
+#
+# GPU docker setup:
+#   docker run -d --name milvus --gpus all \
+#     -p 19530:19530 \
+#     -v $(pwd)/milvus_data:/var/lib/milvus \
+#     milvusdb/milvus-gpu:v2.4.0 milvus run standalone
+#
+# CPU docker setup (change index_type to "IVF_FLAT" in milvus_index.py):
+#   docker run -d --name milvus \
+#     -p 19530:19530 \
+#     -v $(pwd)/milvus_data:/var/lib/milvus \
+#     milvusdb/milvus:v2.4.0 milvus run standalone
+milvus:
+  host: "127.0.0.1"
+  port: 19530
+  nlist: 1024
+  nprobe: 32
+  insert_batch_size: 10000
+  search_batch_size: 5000
+  use_gpu: false
+  podcast_collection_name: "podcast"
+  radio_collection_name: "radio"
+
+# ─── Batch Inference ─────────────────────────────────────────
+inference:
+  user_chunk_size: 10000 #500000
+  output_format: "parquet"
+  output_path: "outputs/recommendations/"
+  top_k: 50
+
+# ─── Hardware ────────────────────────────────────────────────
+hardware:
+  gpu_id: 0
+  seed: 42
+
+# ─── VRAM Budget (single A100 80GB) ──────────────────────────
+# User embeddings    : 8.6M × 128 × 2 bytes fp16  =  2.2 GB
+# Radio embeddings   : 52K  × 128 × 2 bytes fp16  =  0.01 GB
+# Milvus GPU index   : 300K × 128 × 4 bytes fp32  =  0.15 GB
+# Training batch     : 131K × 128 × 2 bytes fp16  =  0.03 GB
+# Activations/grads  :                             ~  4.0 GB
+# Total peak                                       ~  6.5 GB  ✓
