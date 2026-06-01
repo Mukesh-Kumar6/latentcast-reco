@@ -5,8 +5,9 @@ Batch Recommendation Generator — 8.6M users → top-50 podcast recommendations
 Strategy:
   1. Load all user embeddings in chunks (500K at a time)
   2. Pass each chunk through bridge → podcast latent space
-  3. Batch FAISS GPU search → top-50 podcasts per user
-  4. Write output as partitioned Parquet shards
+  3. Optionally condition queries with edit-derived preference memory
+  4. Batch FAISS GPU search → top-50 podcasts per user
+  5. Write output as partitioned Parquet shards
 
 Memory math per chunk (500K users):
   User embeddings : 500K × 128 × 2 bytes (fp16)  = 128MB
@@ -45,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from data.milvus_loader import load_collection_vectors
 from models.alu_model import ALUModel
 from models.bridge import CrossDomainBridge
+from models.preference_memory import PreferenceMemory
 
 
 def load_models(cfg: dict, device: torch.device):
@@ -118,16 +120,29 @@ def run_batch_inference(cfg: dict):
         str(Path(cfg["faiss"]["index_path"]).parent / "podcast_ids_ordered.npy"),
         allow_pickle=True
     )
+    preference_memory = PreferenceMemory.from_config(
+        cfg=cfg,
+        user_id_map=user_id_map,
+        podcast_ids=podcast_ids_ordered,
+    )
 
     out_dir = Path(cfg["inference"]["output_path"])
     out_dir.mkdir(parents=True, exist_ok=True)
 
     CHUNK = cfg["inference"]["user_chunk_size"]
     TOP_K = cfg["inference"]["top_k"]
+    SEARCH_TOP_K = (
+        preference_memory.search_top_k(
+            TOP_K,
+            cfg.get("preference_memory", {}).get("exclusion_buffer", 20),
+        )
+        if preference_memory
+        else TOP_K
+    )
     n_chunks = (n_users + CHUNK - 1) // CHUNK
 
     print(f"[Infer] {n_users:,} users | chunk={CHUNK:,} | "
-          f"top_k={TOP_K} | {n_chunks} chunks")
+          f"top_k={TOP_K} | search_top_k={SEARCH_TOP_K} | {n_chunks} chunks")
 
     t_start = time.time()
 
@@ -149,21 +164,28 @@ def run_batch_inference(cfg: dict):
         with torch.no_grad():
             user_podcast_embs = bridge(user_embs)              # [chunk, D] normalized
 
-        # ── Step 3: FAISS GPU search ──────────────────────────
+        # ── Step 3: Apply edit-conditioned preference memory ──
+        if preference_memory:
+            user_podcast_embs = preference_memory.condition_queries(
+                user_indices=user_ids_t,
+                base_queries=user_podcast_embs,
+            )
+
+        # ── Step 4: FAISS GPU search ──────────────────────────
         # query_np = user_podcast_embs.cpu().numpy().astype(np.float32)
         # scores, podcast_indices = gpu_index.search(query_np, TOP_K)
         if isinstance(gpu_index, faiss.GpuIndex):
             # FAISS GPU index can accept GPU tensors
             query_gpu = user_podcast_embs.to(torch.float32)  # Ensure float32
-            scores, podcast_indices = gpu_index.search(query_gpu, TOP_K)
+            scores, podcast_indices = gpu_index.search(query_gpu, SEARCH_TOP_K)
         else:
             # Fallback: CPU index requires NumPy
             query_np = user_podcast_embs.cpu().numpy().astype(np.float32)
-            scores, podcast_indices = gpu_index.search(query_np, TOP_K)
+            scores, podcast_indices = gpu_index.search(query_np, SEARCH_TOP_K)
         # scores:          [chunk, TOP_K] float32
         # podcast_indices: [chunk, TOP_K] int64
 
-        # ── Step 4: Map back to original IDs ──────────────────
+        # ── Step 5: Map back to original IDs ──────────────────
         rows = []
         for i in range(chunk_size):
             user_int_id = start + i
@@ -175,6 +197,13 @@ def run_batch_inference(cfg: dict):
             valid = p_indices >= 0
             p_ids = podcast_ids_ordered[p_indices[valid]].tolist()
             p_sc  = p_scores[valid].tolist()
+            if preference_memory:
+                p_ids, p_sc = preference_memory.filter_results(
+                    user_idx=user_int_id,
+                    podcast_ids=p_ids,
+                    scores=p_sc,
+                    top_k=TOP_K,
+                )
 
             rows.append({
                 "user_id":    original_uid,
@@ -182,7 +211,7 @@ def run_batch_inference(cfg: dict):
                 "scores":      [round(float(s), 4) for s in p_sc],
             })
 
-        # ── Step 5: Write shard ───────────────────────────────
+        # ── Step 6: Write shard ───────────────────────────────
         shard_path = out_dir / f"reco_chunk_{chunk_idx:03d}.parquet"
         df = pd.DataFrame(rows)
         df.to_parquet(shard_path, index=False, compression="snappy")

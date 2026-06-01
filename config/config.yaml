@@ -44,6 +44,25 @@ bridge:
   contrastive_margin: 0.5
   checkpoint_dir: "checkpoints/bridge/"
 
+# ─── Phase 2: Edit-Conditioned Preference Memory ─────────────
+# Optional lightweight personalization on top of the trained ALU + bridge model.
+# Event file columns: user_id, podcast_id, event_type, timestamp (optional).
+preference_memory:
+  enabled: false
+  events_path: "data/preference_events.parquet"
+  alpha: 0.35
+  recency_half_life_days: 30
+  max_events_per_user: 100
+  exclusion_buffer: 20
+  exclude_event_types: ["remove", "not_interested"]
+  event_weights:
+    like: 1.0
+    save: 1.25
+    playlist_add: 1.5
+    skip: -0.35
+    remove: -1.0
+    not_interested: -1.5
+
 # ─── Vector Store Backend ─────────────────────────────────────
 # "milvus" → raw source vectors from Milvus + Milvus retrieval path
 # "faiss"  → local latent vectors + local FAISS retrieval

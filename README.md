@@ -49,6 +49,13 @@ Radio feedback
                 |
                 v
 +-------------------------------+
+| Preference Memory (optional)  |
+| edits -> signed latent delta  |
+| removals -> exact exclusions  |
++---------------+---------------+
+                |
+                v
++-------------------------------+
 | Retrieval Layer               |
 | Milvus vector source          |
 | FAISS active retrieval path   |
@@ -67,6 +74,8 @@ Top-K podcast recommendations
 - **Rating-aware BPR training** with strong positives, weak positives, explicit negatives, and sampled unknown negatives.
 - **Cross-domain transfer** from radio to podcasts through a learned MLP bridge.
 - **Contrastive bridge training** using semantically similar radio-podcast anchor pairs.
+- **Edit-conditioned preference memory** that adapts retrieval queries from recent user actions without retraining the base model.
+- **Exact-item suppression** for removed or explicitly unwanted recommendations.
 - **Milvus-backed vector loading** so item IDs and content vectors stay aligned with the catalog.
 - **FAISS retrieval backend** for the active local/offline recommendation path.
 - **Batch inference pipeline** for generating recommendation shards.
@@ -121,6 +130,23 @@ The bridge maps radio-space latent vectors into podcast-space latent vectors.
 
 Anchor pairs are mined by cosine similarity between radio and podcast content vectors. The bridge is trained with an InfoNCE objective so matching radio-podcast anchors are pulled together while in-batch negatives are pushed apart.
 
+### Phase 2: Edit-Conditioned Preference Memory
+
+The optional preference-memory layer adapts recommendations from recent user corrections without retraining the ALU model or cross-domain bridge.
+
+Each podcast edit becomes a signed constraint over the podcast latent space:
+
+| Event | Default weight | Behavior |
+| --- | ---: | --- |
+| `like` | `1.0` | Pull toward similar podcasts |
+| `save` | `1.25` | Pull toward similar podcasts |
+| `playlist_add` | `1.5` | Strong pull toward similar podcasts |
+| `skip` | `-0.35` | Weak push away |
+| `remove` | `-1.0` | Push away and suppress exact podcast |
+| `not_interested` | `-1.5` | Strong push away and suppress exact podcast |
+
+Recent events receive more weight through configurable time decay. At inference time, the sparse per-user preference delta is blended with the bridged query vector before FAISS retrieval.
+
 ---
 
 ## Repository Structure
@@ -140,7 +166,8 @@ Anchor pairs are mined by cosine similarity between radio and podcast content ve
 │   └── milvus_index.py          # Milvus validation/index stage
 ├── models/
 │   ├── alu_model.py             # UserEncoder, ItemEncoder, ALUModel
-│   └── bridge.py                # CrossDomainBridge and anchor mining
+│   ├── bridge.py                # CrossDomainBridge and anchor mining
+│   └── preference_memory.py     # Optional edit-conditioned query adaptation
 ├── pipeline/
 │   └── run_pipeline.py          # End-to-end pipeline orchestrator
 ├── scripts/
@@ -194,6 +221,30 @@ text    VarChar(65535)
 vector  FloatVector(768)
 ```
 
+### Preference Events
+
+Phase 2 accepts a Parquet, CSV, JSONL, or pickle file:
+
+```text
+data/preference_events.parquet
+```
+
+Required fields:
+
+```text
+user_id
+podcast_id
+event_type
+```
+
+Optional field:
+
+```text
+timestamp
+```
+
+Set `preference_memory.enabled: true` after the event file is available. When disabled, inference behaves exactly like the base ALU + bridge pipeline.
+
 ---
 
 ## Configuration
@@ -211,6 +262,9 @@ Key settings:
 - `training.batch_size`: ALU training batch size
 - `training.num_negatives`: negatives sampled per positive
 - `bridge.similarity_threshold`: radio-podcast anchor similarity threshold
+- `preference_memory.enabled`: enable or disable edit-conditioned inference
+- `preference_memory.alpha`: blend strength for the edit-derived latent delta
+- `preference_memory.recency_half_life_days`: event time-decay half-life
 - `vector_store`: active path is `faiss`; the Milvus inference path is retained as legacy reference code
 - `inference.top_k`: number of podcasts returned per user
 
@@ -329,6 +383,7 @@ Planned metrics:
 | Coverage | To be added |
 | Catalog diversity | To be added |
 | Repeat recommendation rate | To be added |
+| Correction or removal rate | To be added |
 
 Suggested recruiter-facing result format after evaluation:
 
@@ -347,6 +402,7 @@ Inference time: TBD
 - Item vectors are loaded from Milvus, keeping item identity aligned with the catalog source of truth.
 - The item encoder supports cold-start items as long as content vectors are available.
 - Bridge anchors are mined in batches to avoid materializing the full radio-by-podcast similarity matrix.
+- Preference memory stores sparse edit constraints and only materializes deltas for the active inference chunk.
 - Inference is chunked so large user populations can be processed without loading all scores into memory.
 
 ---
@@ -367,7 +423,7 @@ Inference time: TBD
 ## Future Work
 
 - Add an offline evaluation harness for Recall@K, NDCG@K, MAP@K, and catalog coverage.
-- Add edit-style preference events such as skips, removals, playlist corrections, and search refinements.
+- Add a text encoder for search corrections and free-form preference constraints.
 - Add freshness and diversity constraints during retrieval or re-ranking.
 - Re-enable Milvus search for metadata-aware filters such as language, explicit content, region, and content category.
 - Add online learning or periodic preference refresh jobs.
