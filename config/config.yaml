@@ -109,6 +109,15 @@ inference:
   output_path: "outputs/recommendations/"
   top_k: 50
 
+# ─── Offline Evaluation ───────────────────────────────────────
+# Holdout rows: user_id, podcast_id, plus an optional relevance column.
+evaluation:
+  holdout_path: "data/podcast_holdout.parquet"
+  recommendations_glob: "outputs/recommendations/*.parquet"
+  output_path: "outputs/evaluation/metrics.json"
+  relevance_column: null
+  relevance_threshold: 1.0
+
 # ─── Hardware ────────────────────────────────────────────────
 hardware:
   gpu_id: 0
@@ -117,7 +126,7 @@ hardware:
 # ─── VRAM Budget (single A100 80GB) ──────────────────────────
 # User embeddings    : 8.6M × 128 × 2 bytes fp16  =  2.2 GB
 # Radio embeddings   : 52K  × 128 × 2 bytes fp16  =  0.01 GB
-# Milvus GPU index   : 300K × 128 × 4 bytes fp32  =  0.15 GB
+# FAISS GPU index    : 300K × 128 × 4 bytes fp32  =  0.15 GB
 # Training batch     : 131K × 128 × 2 bytes fp16  =  0.03 GB
 # Activations/grads  :                             ~  4.0 GB
 # Total peak                                       ~  6.5 GB  ✓

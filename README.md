@@ -159,6 +159,9 @@ Recent events receive more weight through configurable time decay. At inference 
 │   ├── dataset.py               # Baseline radio feedback dataset
 │   ├── dataset2.py              # Rating-aware BPR dataset
 │   └── milvus_loader.py         # Milvus vector loading utilities
+├── evaluation/
+│   ├── evaluate.py              # Offline evaluation CLI
+│   └── metrics.py               # NDCG@10 and Recall@50
 ├── inference/
 │   ├── batch_infer.py           # FAISS batch inference
 │   ├── faiss_index.py           # FAISS index builder
@@ -373,25 +376,48 @@ scores       list[float]
 
 Evaluation metrics are intentionally separated from the training pipeline so they can be run against offline holdout data, production feedback, or A/B test logs.
 
-Planned metrics:
+Implemented metrics:
 
 | Metric | Status |
 | --- | --- |
-| Recall@K | To be added |
-| NDCG@K | To be added |
+| Recall@50 | Implemented |
+| NDCG@10 | Implemented |
 | MAP@K | To be added |
 | Coverage | To be added |
 | Catalog diversity | To be added |
 | Repeat recommendation rate | To be added |
 | Correction or removal rate | To be added |
 
-Suggested recruiter-facing result format after evaluation:
+Provide a held-out podcast feedback file:
+
+```text
+data/podcast_holdout.parquet
+```
+
+Required fields:
+
+```text
+user_id
+podcast_id
+```
+
+Each row represents a relevant podcast interaction hidden from recommendation generation. Then run:
+
+```bash
+python3 -m evaluation.evaluate --config config/config.yaml
+```
+
+Results are printed and saved to:
+
+```text
+outputs/evaluation/metrics.json
+```
+
+Example result format:
 
 ```text
 NDCG@10:        TBD
 Recall@50:      TBD
-Coverage@50:    TBD
-Inference time: TBD
 ```
 
 ---
